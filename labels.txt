@@ -1,0 +1,3 @@
+0 helmet
+1 no-helmet
+2 no-person

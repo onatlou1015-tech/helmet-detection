@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Helmet Detection System</title>
+
+        <!-- External Libraries -->
+        <script
+            src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+        <script
+            src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+        <!-- Styles -->
+        <link rel="stylesheet" href="css/style.css" />
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>🪖 Helmet Detection System</h1>
+                <p class="subtitle">Real-time helmet detection using
+                    TensorFlow.js</p>
+            </header>
+
+            <main>
+                <!-- Video Section -->
+                <div class="video-container">
+                    <video id="webcam" autoplay playsinline></video>
+                    <div class="overlay-text"
+                        id="predictionText">Loading...</div>
+                </div>
+
+                <!-- Controls -->
+                <div class="controls">
+                    <button id="startBtn" class="btn btn-primary">
+                        <span class="icon">▶</span> Start Camera
+                    </button>
+                    <button id="stopBtn" class="btn btn-danger">
+                        <span class="icon">⏹</span> Stop Camera
+                    </button>
+                    <button id="screenshotBtn" class="btn btn-secondary">
+                        <span class="icon">📸</span> Screenshot
+                    </button>
+                </div>
+
+                <!-- Status Section -->
+                <div class="status-section">
+                    <div class="status-bar">
+                        <span class="status-label">Status:</span>
+                        <span id="statusText" class="status-text">Click
+                            "Start Camera" to begin</span>
+                    </div>
+
+                    <div class="prediction-details" id="predictionDetails">
+                        <div class="prediction-item placeholder">
+                            <span class="label">Waiting for detection...</span>
+                        </div>
+                    </div>
+
+                    <div class="confidence-section">
+                        <span class="confidence-label">Confidence:</span>
+                        <span id="confidenceText"
+                            class="confidence-value">--</span>
+                    </div>
+                </div>
+
+                <!-- Stats Section -->
+                <div class="stats-section">
+                    <div class="stat-item">
+                        <span class="stat-label">Total Detections</span>
+                        <span id="totalDetections" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Helmet</span>
+                        <span id="helmetCount" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">No Helmet</span>
+                        <span id="noHelmetCount" class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">No Person</span>
+                        <span id="noPersonCount" class="stat-value">0</span>
+                    </div>
+                </div>
+            </main>
+
+            <footer>
+                <p>Made with ❤️ using Teachable Machine &amp; TensorFlow.js</p>
+            </footer>
+        </div>
+
+        <!-- JavaScript -->
+        <script src="js/app.js"></script>
+    </body>
+</html>
