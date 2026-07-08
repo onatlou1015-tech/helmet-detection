@@ -17,7 +17,7 @@ const CONFIG = {
     // IMPORTANT: Point this to your model folder
     // If your model is in the same folder as index.html, use "./my_model/"
     // If it's in a subfolder, use "./path/to/your/model/"
-    MODEL_PATH: "./my_model/", // <-- CHANGE THIS to your model path
+    MODEL_PATH: "./model/", // <-- CHANGE THIS to your model path
     
     // Camera settings
     CAMERA_WIDTH: 200,
