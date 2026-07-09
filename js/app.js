@@ -1,12 +1,9 @@
 /**
  * ============================================
- * HELMET DETECTION APP - Teachable Machine Version
+ * HELMET DETECTION APP - Complete Version
  * ============================================
- * This uses the standard Teachable Machine image model
- * with the webcam helper from the TM library.
- * 
- * Filename: app.js
- * Version: 2.0.0
+ * Model: Local folder "./model/"
+ * Version: 2.1.0
  * ============================================
  */
 
@@ -14,10 +11,8 @@
 // CONFIGURATION
 // ============================================
 const CONFIG = {
-    // IMPORTANT: Point this to your model folder
-    // If your model is in the same folder as index.html, use "./my_model/"
-    // If it's in a subfolder, use "./path/to/your/model/"
-    MODEL_PATH: "./model/", // <-- CHANGE THIS to your model path
+    // Model path - points to local folder
+    MODEL_PATH: "./model/", // <-- Your model folder
     
     // Camera settings
     CAMERA_WIDTH: 200,
@@ -26,6 +21,14 @@ const CONFIG = {
     
     // Detection settings
     CONFIDENCE_THRESHOLD: 0.5,
+    
+    // Serial settings
+    SERIAL: {
+        ENABLED: true,
+        BAUD_RATE: 9600,
+        DATA_FORMAT: 'json', // 'json' or 'simple'
+        SEND_INTERVAL: 500 // milliseconds between sends
+    },
     
     // Color coding for different classes
     COLORS: {
@@ -48,6 +51,9 @@ const DOM = {
     startBtn: document.getElementById('startBtn'),
     stopBtn: document.getElementById('stopBtn'),
     screenshotBtn: document.getElementById('screenshotBtn'),
+    resetStatsBtn: document.getElementById('resetStatsBtn'),
+    serialConnectBtn: document.getElementById('serialConnectBtn'),
+    serialStatus: document.getElementById('serialStatus'),
     totalDetections: document.getElementById('totalDetections'),
     helmetCount: document.getElementById('helmetCount'),
     noHelmetCount: document.getElementById('noHelmetCount'),
@@ -70,8 +76,137 @@ const State = {
         noPerson: 0
     },
     lastPrediction: null,
-    classLabels: []
+    classLabels: [],
+    lastSendTime: 0,
+    lastSentData: null
 };
+
+// ============================================
+// SERIAL COMMUNICATION
+// ============================================
+class SerialManager {
+    constructor() {
+        this.port = null;
+        this.reader = null;
+        this.writer = null;
+        this.isConnected = false;
+        this.isOpen = false;
+        this.onDataReceived = null;
+    }
+
+    async connect() {
+        try {
+            if (!('serial' in navigator)) {
+                throw new Error('Web Serial API not supported. Please use Chrome or Edge.');
+            }
+
+            this.port = await navigator.serial.requestPort();
+            await this.port.open({ baudRate: CONFIG.SERIAL.BAUD_RATE });
+
+            const textEncoder = new TextEncoderStream();
+            this.writer = textEncoder.writable.getWriter();
+            
+            const textDecoder = new TextDecoderStream();
+            this.reader = textDecoder.readable.getReader();
+            
+            this.port.readable.pipeTo(textDecoder.writable);
+            textEncoder.readable.pipeTo(this.port.writable);
+            
+            this.isConnected = true;
+            this.isOpen = true;
+            
+            console.log('✅ Serial connection established');
+            this.updateStatus('Connected', true);
+            
+            this.readData();
+            return true;
+        } catch (error) {
+            console.error('❌ Serial connection error:', error);
+            this.updateStatus('Connection failed', false);
+            this.isConnected = false;
+            this.isOpen = false;
+            throw error;
+        }
+    }
+
+    async disconnect() {
+        try {
+            if (this.writer) {
+                await this.writer.close();
+                this.writer = null;
+            }
+            if (this.reader) {
+                await this.reader.cancel();
+                this.reader = null;
+            }
+            if (this.port && this.port.readable) {
+                await this.port.close();
+            }
+            this.isConnected = false;
+            this.isOpen = false;
+            this.updateStatus('Disconnected', false);
+            console.log('🔌 Serial disconnected');
+        } catch (error) {
+            console.error('❌ Error disconnecting:', error);
+        }
+    }
+
+    async readData() {
+        try {
+            while (this.isOpen && this.reader) {
+                const { value, done } = await this.reader.read();
+                if (done) break;
+                if (value && this.onDataReceived) {
+                    this.onDataReceived(value);
+                }
+            }
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('❌ Serial read error:', error);
+            }
+        }
+    }
+
+    async sendData(data) {
+        if (!this.isConnected || !this.writer) {
+            return false;
+        }
+
+        try {
+            let message = '';
+            if (CONFIG.SERIAL.DATA_FORMAT === 'json') {
+                message = JSON.stringify(data) + '\n';
+            } else {
+                const status = data.className.toLowerCase().includes('helmet') ? 1 : 
+                              data.className.toLowerCase().includes('no helmet') ? 0 : -1;
+                message = `${data.className},${data.confidence},${status}\n`;
+            }
+            
+            await this.writer.write(message);
+            console.log('📤 Serial sent:', message.trim());
+            return true;
+        } catch (error) {
+            console.error('❌ Serial send error:', error);
+            return false;
+        }
+    }
+
+    updateStatus(text, connected) {
+        if (DOM.serialStatus) {
+            DOM.serialStatus.textContent = `Serial: ${text}`;
+            DOM.serialStatus.className = `serial-status ${connected ? 'connected' : 'disconnected'}`;
+        }
+        if (DOM.serialConnectBtn) {
+            DOM.serialConnectBtn.className = `btn btn-serial ${connected ? 'connected' : 'disconnected'}`;
+            DOM.serialConnectBtn.innerHTML = connected ? 
+                '<span class="icon">🔌</span> Disconnect Serial' : 
+                '<span class="icon">🔌</span> Connect Serial';
+        }
+    }
+}
+
+// Initialize serial manager
+const serialManager = new SerialManager();
 
 // ============================================
 // UTILITY FUNCTIONS
@@ -111,7 +246,7 @@ function updateStats(className) {
 
 function setStatus(message, isError = false) {
     DOM.statusText.textContent = message;
-    DOM.statusText.style.color = isError ? '#e74c3c' : '#333';
+    DOM.statusText.className = `status-text${isError ? ' error' : ''}`;
 }
 
 function setConfidence(confidence) {
@@ -128,18 +263,27 @@ function showLoading() {
 async function loadModel() {
     try {
         showLoading();
-        setStatus('Loading model...');
+        setStatus('Loading model from local folder...');
+        DOM.predictionText.textContent = '⏳ Loading...';
         
-        // Build the URLs
+        // Build the URLs for local model files
         const modelURL = CONFIG.MODEL_PATH + "model.json";
         const metadataURL = CONFIG.MODEL_PATH + "metadata.json";
         
         console.log('📂 Loading model from:', modelURL);
         console.log('📂 Loading metadata from:', metadataURL);
         
-        // Check if path is configured
-        if (CONFIG.MODEL_PATH === "./my_model/") {
-            throw new Error('Please update CONFIG.MODEL_PATH to point to your model folder.');
+        // Check if model path is configured correctly
+        if (CONFIG.MODEL_PATH === "./model/") {
+            // Check if model files exist by trying to fetch them
+            try {
+                const response = await fetch(modelURL);
+                if (!response.ok) {
+                    throw new Error(`Model file not found at ${modelURL}. Please make sure your model files are in the "model" folder.`);
+                }
+            } catch (fetchError) {
+                throw new Error(`Cannot access model files. Please ensure the "model" folder contains model.json and metadata.json files. Error: ${fetchError.message}`);
+            }
         }
         
         // Load the model and metadata using Teachable Machine
@@ -152,51 +296,43 @@ async function loadModel() {
         console.log('📊 Total classes:', State.maxPredictions);
         
         setStatus('✅ Model loaded! Click "Start Camera" to begin');
-        DOM.predictionText.textContent = 'Ready';
-        DOM.predictionText.style.backgroundColor = 'rgba(0,0,0,0.7)';
+        DOM.predictionText.textContent = '✅ Ready';
         
         return true;
     } catch (error) {
         console.error('❌ Error loading model:', error);
         setStatus(`❌ Error: ${error.message}`, true);
-        DOM.predictionText.textContent = 'Error';
+        DOM.predictionText.textContent = '❌ Error';
         return false;
     }
 }
 
 // ============================================
-// CAMERA FUNCTIONS (Using Teachable Machine Webcam)
+// CAMERA FUNCTIONS
 // ============================================
 async function setupCamera() {
     try {
-        // Use Teachable Machine's Webcam helper
         State.webcam = new tmImage.Webcam(
             CONFIG.CAMERA_WIDTH, 
             CONFIG.CAMERA_HEIGHT, 
             CONFIG.FLIP_CAMERA
         );
         
-        await State.webcam.setup(); // Request camera access
+        await State.webcam.setup();
         await State.webcam.play();
         
-        // The TM webcam creates its own canvas, we need to append it
-        // But we want to use our video element, so we'll sync them
-        // Actually, let's use the TM webcam's canvas directly
         const canvas = State.webcam.canvas;
         canvas.style.width = '100%';
-        canvas.style.height = 'auto';
+        canvas.style.height = '100%';
+        canvas.style.objectFit = 'cover';
         canvas.style.display = 'block';
         
-        // Replace the video element with the canvas
         const videoContainer = DOM.video.parentElement;
-        // Remove the video element
         DOM.video.style.display = 'none';
-        // Insert the canvas before the video
         videoContainer.insertBefore(canvas, DOM.video);
-        // Store reference to canvas
         DOM.canvas = canvas;
         
-        console.log('📷 Camera started successfully using TM Webcam');
+        console.log('📷 Camera started successfully');
         return true;
     } catch (error) {
         console.error('❌ Camera error:', error);
@@ -208,11 +344,9 @@ async function setupCamera() {
 function stopCamera() {
     if (State.webcam) {
         State.webcam.stop();
-        // Remove the canvas if it exists
         if (DOM.canvas && DOM.canvas.parentElement) {
             DOM.canvas.parentElement.removeChild(DOM.canvas);
         }
-        // Show the video element again
         DOM.video.style.display = 'block';
         State.webcam = null;
         console.log('📷 Camera stopped');
@@ -220,19 +354,80 @@ function stopCamera() {
 }
 
 // ============================================
-// PREDICTION FUNCTIONS (Using TM Model)
+// SERIAL COMMUNICATION FUNCTIONS
+// ============================================
+async function connectSerial() {
+    try {
+        if (serialManager.isConnected) {
+            await serialManager.disconnect();
+            return;
+        }
+        
+        DOM.serialConnectBtn.textContent = '⏳ Connecting...';
+        DOM.serialConnectBtn.disabled = true;
+        
+        await serialManager.connect();
+        
+        DOM.serialConnectBtn.disabled = false;
+        
+        // Set up serial data received callback
+        serialManager.onDataReceived = (data) => {
+            console.log('📥 Serial received:', data);
+            // You can process incoming serial data here
+        };
+        
+    } catch (error) {
+        console.error('❌ Failed to connect serial:', error);
+        DOM.serialConnectBtn.textContent = '🔌 Connect Serial';
+        DOM.serialConnectBtn.disabled = false;
+        alert(`Failed to connect to serial device: ${error.message}`);
+    }
+}
+
+async function sendToSerial(className, confidence) {
+    if (!CONFIG.SERIAL.ENABLED || !serialManager.isConnected) {
+        return;
+    }
+
+    const now = Date.now();
+    if (now - State.lastSendTime < CONFIG.SERIAL.SEND_INTERVAL) {
+        return;
+    }
+
+    const data = {
+        timestamp: new Date().toISOString(),
+        className: className,
+        confidence: parseFloat(confidence),
+        confidencePercent: `${confidence}%`,
+        helmetDetected: className.toLowerCase().includes('helmet'),
+        noHelmetDetected: className.toLowerCase().includes('no helmet'),
+        stats: {
+            total: State.stats.total,
+            helmet: State.stats.helmet,
+            noHelmet: State.stats.noHelmet,
+            noPerson: State.stats.noPerson
+        }
+    };
+
+    const dataString = JSON.stringify(data);
+    if (dataString !== State.lastSentData) {
+        await serialManager.sendData(data);
+        State.lastSentData = dataString;
+        State.lastSendTime = now;
+    }
+}
+
+// ============================================
+// PREDICTION FUNCTIONS
 // ============================================
 async function predictLoop() {
     if (!State.isRunning) return;
 
     try {
-        // Update webcam frame
         State.webcam.update();
         
-        // Predict using the TM model
         const predictions = await State.model.predict(State.webcam.canvas);
         
-        // Find highest confidence prediction
         let maxPrediction = predictions[0];
         for (let i = 1; i < predictions.length; i++) {
             if (predictions[i].probability > maxPrediction.probability) {
@@ -243,9 +438,7 @@ async function predictLoop() {
         const className = maxPrediction.className;
         const confidence = (maxPrediction.probability * 100).toFixed(1);
         
-        // Only update if confidence is above threshold
         if (maxPrediction.probability >= CONFIG.CONFIDENCE_THRESHOLD) {
-            // Update UI
             const emoji = getEmoji(className);
             const color = getColor(className);
             
@@ -256,10 +449,10 @@ async function predictLoop() {
             setStatus(`Detected: ${className}`);
             setConfidence(confidence);
             
-            // Update stats only if prediction changed
             if (State.lastPrediction !== className) {
                 updateStats(className);
                 State.lastPrediction = className;
+                await sendToSerial(className, confidence);
             }
         } else {
             DOM.predictionText.textContent = '🔍 Low confidence...';
@@ -267,7 +460,6 @@ async function predictLoop() {
             setConfidence(null);
         }
         
-        // Show all predictions
         let detailsHTML = '';
         predictions.forEach((pred) => {
             const prob = (pred.probability * 100).toFixed(1);
@@ -281,7 +473,6 @@ async function predictLoop() {
         });
         DOM.predictionDetails.innerHTML = detailsHTML;
 
-        // Continue loop
         State.animationId = requestAnimationFrame(predictLoop);
     } catch (error) {
         console.error('❌ Prediction error:', error);
@@ -307,10 +498,8 @@ function takeScreenshot() {
         screenshotCanvas.height = canvas.height;
         const ctx = screenshotCanvas.getContext('2d');
         
-        // Draw the webcam canvas
         ctx.drawImage(canvas, 0, 0);
         
-        // Add overlay text
         const text = DOM.predictionText.textContent;
         ctx.fillStyle = 'rgba(0,0,0,0.6)';
         ctx.fillRect(10, screenshotCanvas.height - 60, screenshotCanvas.width - 20, 50);
@@ -319,7 +508,6 @@ function takeScreenshot() {
         ctx.textAlign = 'center';
         ctx.fillText(text, screenshotCanvas.width / 2, screenshotCanvas.height - 25);
         
-        // Download
         const link = document.createElement('a');
         link.download = `helmet-detection-${Date.now()}.png`;
         link.href = screenshotCanvas.toDataURL('image/png');
@@ -341,19 +529,16 @@ async function startDetection() {
         return;
     }
 
-    // Check if model is loaded
     if (!State.model) {
         setStatus('⏳ Loading model...');
         const loaded = await loadModel();
         if (!loaded) return;
     }
 
-    // Setup camera
     setStatus('📷 Starting camera...');
     const cameraReady = await setupCamera();
     if (!cameraReady) return;
 
-    // Start prediction
     State.isRunning = true;
     State.lastPrediction = null;
     DOM.startBtn.textContent = '⏳ Running...';
@@ -410,18 +595,30 @@ function resetStats() {
 DOM.startBtn.addEventListener('click', startDetection);
 DOM.stopBtn.addEventListener('click', stopDetection);
 DOM.screenshotBtn.addEventListener('click', takeScreenshot);
+DOM.resetStatsBtn.addEventListener('click', resetStats);
+DOM.serialConnectBtn.addEventListener('click', connectSerial);
 
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
-    if (e.key === 's' && e.ctrlKey) {
+    if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         takeScreenshot();
     }
     if (e.key === 'Enter' && !State.isRunning) {
+        e.preventDefault();
         startDetection();
     }
     if (e.key === 'Escape' && State.isRunning) {
+        e.preventDefault();
         stopDetection();
+    }
+    if ((e.key === 'c' || e.key === 'C') && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        connectSerial();
+    }
+    if (e.key === 'r' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        resetStats();
     }
 });
 
@@ -431,13 +628,22 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('load', async () => {
     console.log('🚀 Helmet Detection App starting...');
     console.log('📋 Configuration:', CONFIG);
-    console.log('💡 Make sure your model files are in:', CONFIG.MODEL_PATH);
+    console.log('💡 Model path:', CONFIG.MODEL_PATH);
+    console.log('📁 Make sure your model files are in the "model" folder');
     
-    // Check if model files exist by trying to load
+    if ('serial' in navigator) {
+        console.log('✅ Web Serial API is supported');
+    } else {
+        console.warn('⚠️ Web Serial API not supported. Use Chrome or Edge.');
+        DOM.serialConnectBtn.style.opacity = '0.5';
+        DOM.serialConnectBtn.title = 'Web Serial API not supported';
+    }
+    
+    // Load the model
     await loadModel();
     
     // Set initial state
-    DOM.predictionText.textContent = 'Ready';
+    DOM.predictionText.textContent = '✅ Ready';
     DOM.predictionText.style.backgroundColor = 'rgba(0,0,0,0.7)';
     DOM.predictionDetails.innerHTML = `
         <div class="prediction-item placeholder">
@@ -450,11 +656,17 @@ window.addEventListener('load', async () => {
     console.log('   - Press Enter to start detection');
     console.log('   - Press Escape to stop');
     console.log('   - Press Ctrl+S to take screenshot');
+    console.log('   - Press Ctrl+C to connect/disconnect serial');
+    console.log('   - Press Ctrl+R to reset stats');
+    console.log('   - Serial data format:', CONFIG.SERIAL.DATA_FORMAT);
 });
 
 // Cleanup on page unload
-window.addEventListener('beforeunload', () => {
+window.addEventListener('beforeunload', async () => {
     stopDetection();
+    if (serialManager.isConnected) {
+        await serialManager.disconnect();
+    }
     console.log('🧹 Cleanup completed');
 });
 
@@ -472,13 +684,19 @@ if (window.location.hostname === 'localhost' || window.location.hostname === '12
         CONFIG,
         State,
         DOM,
+        serialManager,
         loadModel,
         startDetection,
         stopDetection,
         takeScreenshot,
-        resetStats
+        resetStats,
+        connectSerial,
+        sendToSerial
     };
     console.log('🔧 Debug mode enabled. Access via window.__debug');
 }
 
-console.log('📝 Update CONFIG.MODEL_PATH to point to your Teachable Machine model folder!');
+console.log('📝 Make sure your model files are in the "model" folder:');
+console.log('   - model/model.json');
+console.log('   - model/metadata.json');
+console.log('   - model/weights.bin (or other weight files)');
